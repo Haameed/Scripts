@@ -5,7 +5,7 @@
 # update:          2019-01-29 
 #       (instance_check has been added to prevent running useless instances)
 # Update:         2019-01-29
-        (logger has been replace with echo to generate error message)
+#        (logger has been replace with echo to generate error message)
 ########################################################################
 DB_ADDRESS='192.168.10.10'
 DB_USER='ping'
