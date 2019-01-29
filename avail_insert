@@ -2,11 +2,27 @@
 ########################################################################
 #               Hamed Maleki
 # creattion date:       2019-01-28 
+# Last update:          2019-01-29 
+#       (instance_check has been added to prevent running useless instances)
 ########################################################################
 DB_ADDRESS='192.168.10.10'
 DB_USER='ping'
 DB_PASSWORD='mypassword'
 DB_NAME='nagiosql'
+
+instance_check()
+{
+PIDFILE=/tmp/.avai_insert.pid
+if [ -e ${PIDFILE} ] && kill -0 `cat ${PIDFILE}` 2>/dev/null
+then
+  echo "$(date +"%b %d %H:%M:S") $HOSTNAME $(basename $0) ($$): $USER   bash  Error: another instance of '$(basename $0)' is already running with PID (PID `cat ${PIDFILE}`). doing nothing ..." >> /var/log/messages
+  exit 1
+fi
+echo $$ > ${PIDFILE}
+}
+
+instance_check
+
 MYSQL="mysql -h $DB_ADDRESS -u $DB_USER -p$DB_PASSWORD --local-infile=1  $DB_NAME"
 while read file
 do 
@@ -16,3 +32,4 @@ then
 rm -f $file 
 fi
 done < <(find /var/log/ping_result/ -mmin +1 | sort -n )
+rm -f ${PIDFILE}
