@@ -1,0 +1,20 @@
+#!/bin/bash 
+########################################################################
+#               Hamed Maleki
+# creattion date:       2019-01-28 
+# Last update:          2019-01-29 
+#       (instance_check has been added to prevent running useless instances)
+########################################################################
+DB_ADDRESS='192.168.10.10'
+DB_USER='ping'
+DB_PASSWORD='mypassword'
+DB_NAME='nagiosql'
+MYSQL="mysql -h $DB_ADDRESS -u $DB_USER -p$DB_PASSWORD --local-infile=1  $DB_NAME"
+while read file
+do 
+$MYSQL -e "load data local infile '$file' into table availability fields terminated by ',' "
+if [ $? -eq 0 ]
+then 
+rm -f $file 
+fi
+done < <(find /var/log/ping_result/ -mmin +1 | sort -n )
