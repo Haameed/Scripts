@@ -2,8 +2,6 @@
 ########################################################################
 #               Hamed Maleki
 # creattion date:       2019-01-28 
-# Last update:          2019-01-29 
-#       (instance_check has been added to prevent running useless instances)
 ########################################################################
 DB_ADDRESS='192.168.10.10'
 DB_USER='ping'
