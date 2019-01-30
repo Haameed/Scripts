@@ -1,49 +1,58 @@
+cat > fun_with_bash 
 #!/bin/bash
 #############################
 #  Author: Hamed Maleki     #
 #############################
-function ask_him() {
-read -p $'\e[1;33menter yes to kill me or enter no to leave me alive:(yes/no): \e[0m '
- ANSWER=$(echo $REPLY |tr [A-Z] [a-z])
-}
+#	This is a gun script to lear how to use commands in scripts
+#	To stop the script press "ctrl + c ""
+#	to send quit  signal press "ctrl + \"
+######################################
+
+### function to ask users their name
 function ask_his_name() {
-	read -p $'\e[1;33mLets be freind. what is your name: \e[0m ' -r NAME
-	if [ -z $NAME ]
-	then
-		echo -e "\n"
-		echo "I wont play with strangers"
-		echo -e "\n"
-		sleep 2 
-		exit
-	else
-		echo -e "\n"
-		echo "OK $name Lets play"
-		sleep 2
-		clear
+	read -p $'\e[1;33mLets be freind. what is your name: \e[0m ' -r NAME ### prompt user to enter his/her name and fill a variable named "NAME"
+	if [ -z $NAME ]														 ### checking if the variable is empty
+	then																  
+		echo -e "\n"													 ### echo new line
+		echo "I wont play with strangers"								 ### if the variable is empty then the function does echo a message
+		echo -e "\n"													 ### echo new line	
+		sleep 2 														 ### wait for 2 seconds
+		exit															 ### exit the script 
+	else																 ### if the variable is not empty
+		echo -e "\n"													 ### echo new line
+		echo "OK $name Lets play"										 ### echo a message with user's name 
+		sleep 2															 ### wait for 2 seconds
+		clear															 ### clear the screen 
 	fi
 }
-function what_he_said() {
-case  $ANSWER in 
-	yes)
-	echo -e "\033[1;31myou fuccking Asswhole !!!!!\033[m" 
+##		create a function to ask yes or no question 
+function ask_him() {
+read -p $'\e[1;33menter yes to kill me or enter no to leave me alive:(yes/no): \e[0m '		### prompt user to enter his/her answer with yes or no 
+ ANSWER=$(echo $REPLY |tr [A-Z] [a-z])													    ### convert upper case character to lower case and fill the "ANSWER" variable
+}
+
+function what_he_said() {																	
+case  $ANSWER in 																			### check the answer and take an action 
+	yes)																					### if answer is yes say some bad words, wait for 2 seconds, clear screen and exit the script 
+	echo -e "\033[1;31myou fuccking Asswhole !!!!!\033[m" 				
 	echo -e "\033[1;32mOK I'm leaving you\033[m" 
 	sleep 2
 	clear
 	exit
 	;;
-	no)
+	no)																						### if answer is no first clear the screen, thnks him/her, 
 	clear
 	echo -e "\033[1;32mThank you $NAME for letting me alive\033[m" 
 	echo -e "\033[1;32mnow count down to start again\033[m" 
 	echo "Halaaa"
-	for i in 1 2 3
+	for i in 1 2 3																	  		### count down from 1 to 3 
 	do
 	echo $i 
 	sleep 1 
 	done
-	continue
+	continue																				### continue your game
 	;;
-	*)
+	*)																						### if answer is not in "yes" or "no", echo somthing and cntinue asking user for correct answer by calling abowe function and the this fuction again and again
 	clear
 	echo -e "\033[1;31mMake your decision\033[m"
 	echo -e "\033[1;31mdo you want to kill me or not ?????????\033[m"
@@ -54,11 +63,11 @@ case  $ANSWER in
 esac
 }
 
-trap 'clear ; echo -e "\n" ;echo -e "\033[1;31mOh Shit do you really want to kill me ????? \033[m"; ask_him ;what_he_said ' INT
-trap 'clear ; echo "What ? let me play!!!!!!!!!!!!!!" ;  echo -e "\r"; echo -e "\r"' QUIT
+trap 'clear ; echo -e "\n" ;echo -e "\033[1;31mOh Shit do you really want to kill me ????? \033[m"; ask_him ;what_he_said ' INT     #### for trap "INT" or inrerupt execute commands and functions. 
+trap 'clear ; echo "What ? let me play!!!!!!!!!!!!!!" ;  echo -e "\r"; echo -e "\r"' QUIT											#### for trap "QUIR" execute commands 
 clear
-ask_his_name
-while true
+ask_his_name																														### starting the script by asking user to enter his/her name 
+while true																															### for ever continue to print some thing on the screen untill user send one of the above signals
 do
 echo "Im so Happy to be here on your screen"
 echo "Lalay lay lalay lay"
@@ -66,3 +75,4 @@ echo "Yaaaaaaaaaaaaaaaaaaaaaaaaaay"
 echo -e "\n"
 sleep 0.5
 done
+
