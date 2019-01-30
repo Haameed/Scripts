@@ -1,0 +1,68 @@
+#!/bin/bash
+#############################
+#  Author: Hamed Maleki     #
+#############################
+function ask_him() {
+read -p $'\e[1;33menter yes to kill me or enter no to leave me alive:(yes/no): \e[0m '
+ ANSWER=$(echo $REPLY |tr [A-Z] [a-z])
+}
+function ask_his_name() {
+	read -p $'\e[1;33mLets be freind. what is your name: \e[0m ' -r NAME
+	if [ -z $NAME ]
+	then
+		echo -e "\n"
+		echo "I wont play with strangers"
+		echo -e "\n"
+		sleep 2 
+		exit
+	else
+		echo -e "\n"
+		echo "OK $name Lets play"
+		sleep 2
+		clear
+	fi
+}
+function what_he_said() {
+case  $ANSWER in 
+	yes)
+	echo -e "\033[1;31myou fuccking Asswhole !!!!!\033[m" 
+	echo -e "\033[1;32mOK I'm leaving you\033[m" 
+	sleep 2
+	clear
+	exit
+	;;
+	no)
+	clear
+	echo -e "\033[1;32mThank you $NAME for letting me alive\033[m" 
+	echo -e "\033[1;32mnow count down to start again\033[m" 
+	echo "Halaaa"
+	for i in 1 2 3
+	do
+	echo $i 
+	sleep 1 
+	done
+	continue
+	;;
+	*)
+	clear
+	echo -e "\033[1;31mMake your decision\033[m"
+	echo -e "\033[1;31mdo you want to kill me or not ?????????\033[m"
+	echo -e "\n"
+	ask_him
+	what_he_said
+	;;
+esac
+}
+
+trap 'clear ; echo -e "\n" ;echo -e "\033[1;31mOh Shit do you really want to kill me ????? \033[m"; ask_him ;what_he_said ' INT
+trap 'clear ; echo "What ? let me play!!!!!!!!!!!!!!" ;  echo -e "\r"; echo -e "\r"' QUIT
+clear
+ask_his_name
+while true
+do
+echo "Im so Happy to be here on your screen"
+echo "Lalay lay lalay lay"
+echo "Yaaaaaaaaaaaaaaaaaaaaaaaaaay"
+echo -e "\n"
+sleep 0.5
+done
