@@ -3,7 +3,7 @@ cat > fun_with_bash
 #############################
 #  Author: Hamed Maleki     #
 #############################
-#	This is a gun script to lear how to use commands in scripts
+#	This is a fun script to learn how to use commands in scripts
 #	To stop the script press "ctrl + c ""
 #	to send quit  signal press "ctrl + \"
 ######################################
