@@ -1,0 +1,878 @@
+#!/bin/bash
+#  Author: Hamed Maleki
+#  Date: 2019-07-22
+############### Functions ###############
+function packet_loss () {
+local ip=$1
+PACKET_LOSS=$( grep pl /tmp/.${ip}.txt 2>/dev/null | awk -F '=' '{print $2}')
+if [ -z $PACKET_LOSS ]
+ then
+ PACKET_LOSS=0
+fi 
+debug PACKET_LOSS
+}
+
+
+function last_status_parameters () {
+last_status=$(grep  NODE_STATUS $OUTPUT_FILE | awk  -F '=' '{print $2}')
+debug last_status
+last_status_change=$(grep STATUS_TIME $OUTPUT_FILE | awk  -F '=' '{print $2}') 
+debug last_status_change
+device_type=$(grep DEVICE_TYPE $OUTPUT_FILE | awk  -F '=' '{print $2}') 
+debug device_type
+counter=$(grep COUNTER $OUTPUT_FILE | awk  -F '=' '{print $2}') 
+if [ -z $counter ] ; then counter=0 ; fi 
+debug counter
+last_long_check=$(grep LAST_LONG_CHECK $OUTPUT_FILE | awk  -F '=' '{print $2}') 
+now=$(date +%s)
+if [ -z $last_long_check ] ; then last_long_check=$(date +%s -d "$LONG_CHECK_PERIOD hour ago") ; fi 
+debug last_long_check
+time_diff=$(( $now - $last_long_check ))
+if [ $time_diff -ge $(( $LONG_CHECK_PERIOD * 60 *60)) ]
+then
+LONG_CHECK='True'
+LAST_LONG_CHECK=$now
+else
+LONG_CHECK='False'
+LAST_LONG_CHECK=$last_long_check
+fi
+}
+
+
+function join_ecare_data_writer() {
+var_name=$1
+var_value=$(echo $2 | tr -d '"' | sed "s/'/\\\'/g")
+if [[ "w$LONG_CHECK" == "wTrue" ]]
+then 
+echo "p2p_join_ecare_data,*$HOST_NAME,*$MAIN_IP,*${var_name},*${var_value}" | nc -U /usr/local/nagios/nagios_data_writer.sock
+fi 
+}
+
+function device_type () {
+local ip=$1
+debug ip
+if [ -z $device_type ] || [ $counter -le 0 ] || [ "w$device_type" == "wnone" ]
+then 
+DEVICE_TYPE=$(/usr/bin/device_type_finder $ip)
+COUNTER=$DEV_COUNT
+else
+DEVICE_TYPE=$device_type
+COUNTER=$(($counter - 1))
+fi
+debug DEVICE_TYPE
+debug COUNTER
+}
+
+
+function snmp_port_status () {
+local action=$1
+case $DEVICE_TYPE in  
+        radio)
+        local ether_list='ether1'
+        ;;
+        mmd433)
+        local ether_list='ether1 ether2 ether3 l2tp-out'
+        ;;
+        mmd750)
+        local ether_list='ether1 ether2 ether3 ether4 ether5 l2tp-out'
+        ;;
+        saf-integra)
+        local ether_list='LAN1 LAN2 LAN3 WAN'
+        ;;
+        nera)
+        local ether_list='giu13-eth1 giu13-eth2 giu13-eth3 giu13-eth4 giu13-eth5'
+        local COMMUNITY='public'
+        ;;
+esac
+debug ether_list
+if [ $action == check ]
+        then 
+                for i in $ether_list
+        do 
+                        PORT_STATUS=$(eval $COMMANDS_PATH/snmp_port_status_p2p $HOST $COMMUNITY $i check )
+                        debug PORT_STATUS
+                        echo -e "PORT_STATUS_$i=$PORT_STATUS" >> $OUTPUT_FILE 
+        done
+        else 
+                for i in $ether_list
+        do 
+                        PORT_TRAFFIC=$(eval $COMMANDS_PATH/snmp_port_status_p2p $HOST $COMMUNITY $i traffic)
+                        debug PORT_TRAFFIC
+                        echo -e "PORT_TRAFFIC_$i=$PORT_TRAFFIC" >> $OUTPUT_FILE
+                done
+fi
+}
+
+
+function parameter_check () {
+local IP=$1
+local OID="$2"
+case $DEVICE_TYPE in 
+        netronics)
+        SNMP_VERSION="v1"
+        ;;
+        *)
+        SNMP_VERSION="v2c"
+        ;;
+esac
+SNMP_OUT=$(snmpwalk -r 1 -t 1 -${SNMP_VERSION} -c $COMMUNITY $IP $OID 2>&1)
+case $SNMP_OUT in 
+        *"No Such"*|*"No more"*|*Unknown*)
+        SNMP_VALUE="Not Supported"
+        CODE=2
+        ;;
+        *"No Response"*)
+        SNMP_VALUE="SNMP Error"
+        CODE=1
+        ;;
+        *)
+        SNMP_VALUE="$SNMP_OUT"
+        CODE=0
+        ;;
+esac
+} 
+
+function last_status_check () {
+if [ ! -z $last_status ] && [ $NODE_STATUS -eq $last_status ]
+then 
+STATUS_TIME=$last_status_change
+else 
+STATUS_TIME=$EXECUTION_TIME
+fi
+debug STATUS_TIME
+}
+
+function debug () {
+VAR=$1
+if [ $DEBUG -eq 1 ] ; then echo "$VAR=`echo "${!VAR}" `";fi
+}
+
+
+function final_out_put () {
+case $DEVICE_TYPE in
+mmd750|mmd433|radio|saf-integra|racom|netronics|nera)
+while read line
+do
+if  [[ $line  == *"PORT_STATUS"* ]] && [[ $line  == *"Down"* ]]
+then 
+OUT_PUT_SERVICE+=$(echo "<font color=red>$(echo $line |awk -F'|' '{print $1}')</font>\n")
+elif [[ $line  == *"PORT_STATUS"* ]] && [[ $line  == *"UP"* ]]
+then 
+OUT_PUT_SERVICE+=$(echo "<font color=green>$(echo $line |awk -F'|' '{print $1}')</font>\n")
+else 
+OUT_PUT_SERVICE+=$(echo "$(echo $line |awk -F'|' '{print $1}'|sed 's/\*/\\*/g')\n")
+fi
+done< <(grep -v -e "CHECK_SHORT_PERIOD" -e  "NODE_STATUS" -e "STATUS_TIME" -e "DEVICE_TYPE" -e "COUNTER" -e "LAST_LONG_CHECK" $OUTPUT_FILE)
+############## creating graphs output
+;;
+*)
+OUT_PUT_SERVICE='-'
+;;
+esac
+Uplink=$( echo $PORTS | awk -F ',' '{print $1}')
+Service1=$( echo $PORTS | awk -F ',' '{print $2}')
+Service2=$( echo $PORTS | awk -F ',' '{print $3}')
+Service3=$( echo $PORTS | awk -F ',' '{print $4}')
+Service4=$( echo $PORTS | awk -F ',' '{print $5}')
+Service5=$( echo $PORTS | awk -F ',' '{print $6}')
+for i in Uplink Service1 Service2 Service3 Service4 Service5
+do 
+if [ ! -z ${!i} ] 
+then 
+PORT_GRAPH_VALUE=$(grep ${!i} $OUTPUT_FILE | grep TRAFFIC | awk -F '|' '{print $2}' | sed "s/${!i}/$i/g")
+if [[ $(echo $PORT_GRAPH_VALUE | wc -w ) -gt 1 ]] ; then OUT_PUT_GRAPH+=" $PORT_GRAPH_VALUE" ; else OUT_PUT_GRAPH+=" ${i}_in="0"Mbps;0 ${i}_out="0"Mbps;0" ; fi
+else 
+OUT_PUT_GRAPH+=" ${i}_in="0"Mbps;0 ${i}_out="0"Mbps;0" 
+fi 
+done
+while IFS=',' read -r BW_Uplink BW_Service1 BW_Service2 BW_Service3 BW_Service4 BW_Service5
+do 
+for i in BW_Uplink BW_Service1 BW_Service2 BW_Service3 BW_Service4 BW_Service5
+do 
+OUT_PUT_GRAPH+=" ${i}=${!i}Mbps;0"
+debug OUT_PUT_GRAPH
+done
+done< <(echo $BW)
+if ! [[ $TX_GRAPH =~ $NUMBER_REGEX ]] ; then TX_GRAPH=0; fi 
+if ! [[ $RX_GRAPH =~ $NUMBER_REGEX ]] ; then RX_GRAPH=0; fi 
+OUT_PUT_GRAPH+=" TX=${TX_GRAPH}dBm;0"
+OUT_PUT_GRAPH+=" RX=${RX_GRAPH}dBm;0"
+debug OUT_PUT_SERVICE
+debug OUT_PUT_GRAPH
+echo -e "$OUT_PUT_SERVICE $OUT_PUT_GRAPH"  | tr -s '\\*' '*'
+}
+
+
+function data_writer () {
+local writer_input=$@
+if [ "w$writer_input" == "w-r" ]
+then 
+echo "DEVICE_TYPE=$DEVICE_TYPE"  >> $OUTPUT_FILE
+echo "COUNTER=$COUNTER"  >> $OUTPUT_FILE
+echo "NODE_STATUS=$NODE_STATUS"  >> $OUTPUT_FILE
+echo "STATUS_TIME=$STATUS_TIME" >> $OUTPUT_FILE
+echo "LAST_LONG_CHECK=$LAST_LONG_CHECK" >> $OUTPUT_FILE
+else 
+local output_field="$writer_input"
+local OUT_PUT_SERVICE=$(echo $OUT_PUT_SERVICE | tr -d '"' | sed "s/'/\\\'/g")
+echo  "service_monitor_p2p,*$HOST_NAME,*$MAIN_IP,*$NODE_STATUS,*$output_field,*$OUT_PUT_SERVICE,*$EXECUTION_TIME,*$STATUS_TIME" | nc -U  /usr/local/nagios/nagios_data_writer.sock
+# if [ $? -eq 0 ]
+# then
+# echo "$(date +"%F %T") sending data for host_name : $HOST_NAME" >> /tmp/hamed.log 
+# else 
+# echo "$(date +"%F %T") failed to send data for host_name : $HOST_NAME" >> /tmp/hamed.log
+# fi 
+# echo  "$HOST_NAME*$MAIN_IP*$NODE_STATUS*$output_field*$OUT_PUT_SERVICE*$EXECUTION_TIME*$STATUS_TIME" >> "$MONITORING_PATH/service_check_p2p_${FILE_DATE}"
+fi
+}
+
+function tx_rx_check() {
+local PARAMETER_NAME=$1
+local THRESHOLD=$2
+if [[ $THRESHOLD =~ $NUMBER_REGEX ]] && [[ ${!PARAMETER_NAME} =~ $NUMBER_REGEX ]]
+then
+if [ ${!PARAMETER_NAME} -le $THRESHOLD ]
+then 
+MESSAGE+=" $PARAMETER_NAME = ${!PARAMETER_NAME},"
+CONDITION=$(($CONDITION+5))
+fi 
+elif [[ $THRESHOLD =~ $NUMBER_REGEX ]] && ! [[ ${!PARAMETER_NAME} =~ $NUMBER_REGEX ]]
+then
+MESSAGE+=" Can't check  $PARAMETER_NAME value is invalid"
+CONDITION=$(($CONDITION+5))
+fi
+}
+
+
+
+
+############### Variables  ###############
+MAIN_IP=$1
+HOST_NAME=$2
+COMMUNITY=$3
+SECONDARY_IP=$4
+COMMANDS_PATH="/usr/local/nagios/libexec"
+MONITORING_PATH='/var/log/monitoring_result'
+PL_PATH='/var/log/ping_result'
+PACKET_LOSS_THRESHOLD='3'
+DEBUG=0
+CONDITION="0"
+MESSAGE=""
+FILE_DATE=$(date +"%Y%m%d_%H%M%S")
+DEV_COUNT=9
+LONG_CHECK_PERIOD=24 ### in hour 
+OUT_PUT_SERVICE=""
+OUT_PUT_GRAPH="|"
+NUMBER_REGEX='^[+-]?[0-9]+([.][0-9]+)?$'
+
+############### choosing IP to monitor  ###############
+packet_loss $MAIN_IP
+if [ -z ${SECONDARY_IP} ] 
+then 
+        HOST=$MAIN_IP
+elif [ ! -z ${SECONDARY_IP} ] && [ ${PACKET_LOSS} -ne 100 ] 
+then 
+        HOST=$MAIN_IP
+elif [ ! -z ${SECONDARY_IP} ] && [ ${PACKET_LOSS} -eq 100 ] 
+then
+    HOST=$SECONDARY_IP
+fi 
+if [ "w$HOST" == "w$SECONDARY_IP" ]
+then 
+SECONDARY_MESSAGE=$(echo "Monitoring $HOST: ")
+fi 
+OUTPUT_FILE="/tmp/.${HOST}_SNMP_RESULT.txt"
+if [ ! -f "$OUTPUT_FILE" ] ; then touch "$OUTPUT_FILE" ; fi
+PORTS=$(cat /tmp/p2p_ether.txt | awk -F '=' -v host=$HOST '$1==host {print $2}')
+BW=$(cat /tmp/p2p_ether.txt | awk -F '=' -v host=$HOST '$1==host {print $3}')
+TX_THRESHOLD=$(cat /tmp/p2p_ether.txt | awk -F '=' -v host=$HOST '$1==host {print $4}')
+RX_THRESHOLD=$(cat /tmp/p2p_ether.txt | awk -F '=' -v host=$HOST '$1==host {print $5}')
+BW_COUNT=$(echo $BW | awk -F ',' '{print NF; exit}')
+while (($BW_COUNT < 6 )) ; do BW="${BW},0" ; BW_COUNT=$(echo $BW | awk -F ',' '{print NF; exit}') ; done 
+last_status_parameters
+################# Checking PACKET_LOSS 
+if [ "w$HOST" == "w$MAIN_IP" ] && [ $PACKET_LOSS -eq 100 ] 
+then
+	truncate -s0 $OUTPUT_FILE
+	EXECUTION_TIME=$(date +'%F %T')
+	NODE_STATUS=2
+	last_status_check
+	DEVICE_TYPE='none'
+	COUNTER=0
+	data_writer -r
+	OUT_PUT_SERVICE="-"
+	data_writer "Critical: Node is Down"
+	echo "Critical: Node is Down"
+	final_out_put
+	exit 2
+elif [[ $PACKET_LOSS -ge $PACKET_LOSS_THRESHOLD ]] && [ $PACKET_LOSS -lt 100 ]
+then 
+	MESSAGE+=" Packet loss is $PACKET_LOSS %."
+	CONDITION=$(($CONDITION + 5))
+fi 
+##################### Main part 
+device_type $HOST
+debug DEVICE_TYPE
+truncate -s0 $OUTPUT_FILE
+case $DEVICE_TYPE in 
+        mmd750|mmd433|radio)
+			snmp_port_status check
+			snmp_port_status traffic
+			############# Device Model #############
+			parameter_check $HOST .1.3.6.1.2.1.1.1.0 
+			if [ $CODE -eq 0 ] ;then 
+			Model=$(echo $SNMP_VALUE | grep -oP RouterOS.* | sed 's/RouterOS //g')
+			join_ecare_data_writer Radio_Model "$Model"
+			join_ecare_data_writer Radio_Type "Mikrotik"
+			else 
+			Model="$SNMP_VALUE"
+			fi
+			echo -e "Model=$Model" >> $OUTPUT_FILE
+			############# Serial Number #############
+			parameter_check $HOST 1.3.6.1.4.1.14988.1.1.7.3
+			if [ $CODE -eq 0 ] ;then 
+			Serial=$(echo $SNMP_VALUE |awk '{ print substr($0, index($0,$4)) }' )
+			join_ecare_data_writer Radio_Serial_No $Serial
+			else 
+			Serial="$SNMP_VALUE"
+			fi
+			echo -e "Serial=$Serial" >> $OUTPUT_FILE
+			############# Version #############
+			parameter_check $HOST 1.3.6.1.4.1.14988.1.1.4.4.0
+			if [ $CODE -eq 0 ] ;then 
+			Version=$(echo $SNMP_VALUE |awk '{ print substr($0, index($0,$4))}')
+			else 
+			Version="$SNMP_VALUE"
+			fi
+			echo -e "Version=$Version" >> $OUTPUT_FILE
+			############## Radio parameters ###############
+			if [ "$DEVICE_TYPE" == "radio" ]
+			then 
+				############# TX and RX Rate #############
+				#parameter_check $HOST  .1.3.6.1.4.1.14988.1.1.1.2.1.13
+				parameter_check $HOST .1.3.6.1.4.1.14988.1.1.1.2.1.19
+				if [ $CODE -eq 0 ] ;then 
+				TX_Rate=$(echo $SNMP_VALUE |awk '{ print substr($0, index($0,$4)) }')
+				else 
+				TX_Rate="$SNMP_VALUE"
+				fi
+				TX_GRAPH=$TX_Rate
+				echo -e "TX_Rate=$TX_Rate" >> $OUTPUT_FILE
+				#parameter_check $HOST  .1.3.6.1.4.1.14988.1.1.1.2.1.14
+				parameter_check $HOST .1.3.6.1.4.1.14988.1.1.1.2.1.3
+				if [ $CODE -eq 0 ] ;then 
+				RX_Rate=$(echo $SNMP_VALUE |awk '{ print substr($0, index($0,$4)) }')
+				else 
+				RX_Rate="$SNMP_VALUE"
+				fi
+				RX_GRAPH=$RX_Rate
+				echo -e "RX_Rate=$RX_Rate" >> $OUTPUT_FILE
+				tx_rx_check TX_Rate $TX_THRESHOLD
+				tx_rx_check	RX_Rate $RX_THRESHOLD
+				############# Frequency #############
+				parameter_check $HOST 1.3.6.1.4.1.14988.1.1.1.3.1.7 
+				if [ $CODE -eq 0 ] ;then 
+				Frequency=$(echo $SNMP_VALUE |awk '{ print substr($0, index($0,$4)) }')
+				else 
+				Frequency="$SNMP_VALUE"
+				fi
+				echo -e "Frequency=$Frequency" >> $OUTPUT_FILE
+				############# SSID #############
+				parameter_check $HOST 1.3.6.1.4.1.14988.1.1.1.3.1.4 #1.3.6.1.4.1.14988.1.1.1.3.1.4.3
+				if [ $CODE -eq 2 ] ;then parameter_check $HOST 1.3.6.1.4.1.14988.1.1.1.1.1.5 ; fi 
+				if [ $CODE -eq 0 ] ;then 
+				SSID=$(echo $SNMP_VALUE |awk '{ print substr($0, index($0,$4)) }') #| sed 's/\*/\\*/g'
+				join_ecare_data_writer SSID "$SSID"
+				else 
+				SSID="$SNMP_VALUE"
+				fi
+				echo -e "SSID=$SSID" >> $OUTPUT_FILE
+				############# Noise Floor #############
+				parameter_check $HOST .1.3.6.1.4.1.14988.1.1.1.3.1.9
+				if [ $CODE -eq 0 ] ;then 
+				NoseFloor=$(echo $SNMP_VALUE |awk '{ print substr($0, index($0,$4)) }' )
+				else 
+				NoseFloor="$SNMP_VALUE"
+				fi
+				echo -e "NoseFloor=$NoseFloor" >> $OUTPUT_FILE
+				############# Overal TX CCQ #############
+				parameter_check $HOST .1.3.6.1.4.1.14988.1.1.1.3.1.9
+				if [ $CODE -eq 0 ] ;then 
+				TX_CCQ=$(echo $SNMP_VALUE |awk '{ print substr($0, index($0,$4))}')
+				else 
+				TX_CCQ="$SNMP_VALUE"
+				fi
+				echo -e "TX_CCQ=$TX_CCQ" >> $OUTPUT_FILE
+			fi
+			############# Uptime #############
+			UPTIME=$(eval $COMMANDS_PATH/check_uptime_human $COMMUNITY $HOST 2>/dev/null )
+			echo -e "UPTIME=$UPTIME" >> $OUTPUT_FILE
+			debug UPTIME
+			############# MAC Address #############
+			IFS=','
+			for port in $PORTS
+			do 
+			INDEX=$(snmpwalk -v2c -c $COMMUNITY $HOST ifDesc |grep $port | awk '{print $1}' | sed -r 's/(.*\.)//g')
+			parameter_check $HOST "ifPhysAddress.${INDEX}"
+			if [ $CODE -eq 0 ] ;then 
+			MAC_Address=$(echo $SNMP_VALUE |awk '{ print substr($0, index($0,$4))}' | tr -d ':' | tr a-z A-Z)
+			if [ "w$port" == "w$(echo $PORTS | awk -F ',' '{print $1}')" ]
+			then 
+			join_ecare_data_writer Radio_MAC_Address "$MAC_Address"
+			fi
+			else 
+			MAC_Address="$SNMP_VALUE"
+			fi
+			echo "MAC_Address_${port}=$MAC_Address"  >> $OUTPUT_FILE
+			#echo "MAC_Address_${port}=$(snmpwalk -r 1 -t 1 -v2c -c $COMMUNITY $HOST  |grep -oP Hex-STRING.* | sed 's/Hex-STRING: //g' | tr -d ' ')" >> $OUTPUT_FILE
+			done
+			unset IFS	
+        ;;
+        saf-integra)
+			snmp_port_status check
+			snmp_port_status traffic
+			############# Device Model and Serial Number  #############
+			parameter_check $HOST .1.3.6.1.2.1.1.1.0
+			if [ $CODE -eq 0 ] ;then 
+			Device_Model=$(echo $SNMP_VALUE |awk -F ';' '{print $1}' | awk '{print $5}' )
+			Serial_number=$(echo $SNMP_VALUE | awk -F ';' '{print $9}' | awk '{print $2}')
+			join_ecare_data_writer Radio_Model "$Device_Model"
+			join_ecare_data_writer Radio_Type "$Saf"
+			join_ecare_data_writer Radio_Serial_No "$Serial_number"
+			else 
+			Device_Model="$SNMP_VALUE"
+			Serial_number="$SNMP_VALUE"
+			fi
+			echo -e "Device_Model=$Device_Model" >> $OUTPUT_FILE
+			echo -e "Serial_number=$Serial_number" >> $OUTPUT_FILE
+			############# TX  POWER #############
+			parameter_check $HOST .1.3.6.1.4.1.7571.100.1.1.7.1.2.1
+			if [ $CODE -eq 0 ] ;then  
+			TX_Power=$(echo $SNMP_VALUE | awk '{print $4}')
+			else 
+			TX_Power="$SNMP_VALUE"
+			fi 
+			echo -e "TX_Power=$TX_Power" >> $OUTPUT_FILE #dBm
+			############# TX Frequency #############
+			parameter_check $HOST 1.3.6.1.4.1.7571.100.1.1.7.1.2.2
+			if [ $CODE -eq 0 ] ;then  
+			TX_Frequency=$(echo $SNMP_VALUE | awk '{print $4/1000}')
+			else 
+			TX_Frequency="$SNMP_VALUE"
+			fi 
+			echo -e "TX_Frequency=$TX_Frequency" >> $OUTPUT_FILE #MHz
+			############# RX Frequency #############
+			parameter_check $HOST 1.3.6.1.4.1.7571.100.1.1.7.1.2.2
+			if [ $CODE -eq 0 ] ;then  
+			RX_Frequency=$(echo $SNMP_VALUE | awk '{print $4/1000}')
+			else 
+			RX_Frequency="$SNMP_VALUE"
+			fi 
+			echo -e "RX_Frequency=$RX_Frequency" >> $OUTPUT_FILE #MHz
+			############# MSE #############
+			parameter_check $HOST 1.3.6.1.4.1.7571.100.1.1.7.1.2.7
+			if [ $CODE -eq 0 ] ;then  
+			MSE=$(echo $SNMP_VALUE | awk '{print $4/1000}')
+			else 
+			MSE="$SNMP_VALUE"
+			fi 
+			echo -e "MSE=$MSE" >> $OUTPUT_FILE #dBm
+			############# Duplex Shift #############
+			parameter_check $HOST .1.3.6.1.4.1.7571.100.1.1.7.1.2.6
+			if [ $CODE -eq 0 ] ;then  
+			Duplex_Shift=$(echo $SNMP_VALUE | awk '{print $4/1000}')
+			else 
+			Duplex_Shift="$SNMP_VALUE"
+			fi 
+			echo -e "Duplex_Shift=$Duplex_Shift" >> $OUTPUT_FILE #MHz
+			############# RX Level  #############
+			parameter_check $HOST .1.3.6.1.4.1.7571.100.1.1.7.1.2.3
+			if [ $CODE -eq 0 ] ;then  
+			RX_Level=$(echo $SNMP_VALUE | awk '{print $4}')
+			else 
+			RX_Level="$SNMP_VALUE"
+			fi 
+			echo -e "RX_Level=$RX_Level" >> $OUTPUT_FILE #dBm
+			RX_GRAPH=$RX_Level
+			tx_rx_check	RX_Level $RX_THRESHOLD
+			############# Radios side  #############
+			parameter_check $HOST .1.3.6.1.4.1.7571.100.1.1.7.1.2.4
+			if [ $CODE -eq 0 ] ;then  
+			Radios_Side=$(echo $SNMP_VALUE | awk '{print $4}') 
+			if [ $Radios_Side -eq 1 ] ; then Radios_Side="High" ; else Radios_Side="Low" ; fi
+			else 
+			Radios_Side="$SNMP_VALUE"
+			fi 
+			echo -e "Radios_Side=$Radios_Side" >> $OUTPUT_FILE
+			############# Acquire Status  #############
+			parameter_check $HOST .1.3.6.1.4.1.7571.100.1.1.7.1.3.1 
+			if [ $CODE -eq 0 ] ;then  
+			Acquire_Status=$(echo $SNMP_VALUE | awk '{print $4}') 
+			if [ $Acquire_Status -eq 1 ] ; then Acquire_Status="Unlock" ; else Acquire_Status="Lock" ; fi 
+			else 
+			Acquire_Status="$SNMP_VALUE"
+			fi 
+			echo -e "Acquire_Status=$Acquire_Status" >> $OUTPUT_FILE
+			############# FEC load  #############
+			parameter_check $HOST .1.3.6.1.4.1.7571.100.1.1.7.1.3.3
+			if [ $CODE -eq 0 ] ;then  
+			FEC_Load=$(echo $SNMP_VALUE | awk '{print $4}') 
+			else 
+			FEC_Load="$SNMP_VALUE"
+			fi 
+			echo -e "FEC_Load=$FEC_Load" >> $OUTPUT_FILE
+			############# Bandwidth  #############
+			parameter_check $HOST .1.3.6.1.4.1.7571.100.1.1.7.1.3.6
+			if [ $CODE -eq 0 ] ;then  
+			Bandwidth=$(echo $SNMP_VALUE | awk '{print $4/1000}')
+			else 
+			Bandwidth="$SNMP_VALUE"
+			fi 
+			echo -e "Bandwidth=$Bandwidth" >> $OUTPUT_FILE #MHz
+			############# Modem Profile  #############
+			parameter_check $HOST .1.3.6.1.4.1.7571.100.1.1.7.1.3.7
+			if [ $CODE -eq 0 ] ;then  
+			Modem_Profile=$(echo $SNMP_VALUE | awk '{ print substr($0, index($0,$4)) }') 
+			else 
+			Modem_Profile="$SNMP_VALUE"
+			fi 
+			echo -e "Modem_Profile=$Modem_Profile" >> $OUTPUT_FILE
+			############# Tx Modulation   #############
+			parameter_check $HOST .1.3.6.1.4.1.7571.100.1.1.7.1.3.9
+			if [ $CODE -eq 0 ] ;then  
+			Tx_Modulation=$(echo $SNMP_VALUE | awk '{ print substr($0, index($0,$4)) }') 
+			else 
+			Tx_Modulation="$SNMP_VALUE"
+			fi 
+			echo -e "Tx_Modulation=$Tx_Modulation" >> $OUTPUT_FILE
+			############# Rx Modulation  #############
+			parameter_check $HOST .1.3.6.1.4.1.7571.100.1.1.7.1.3.8
+			if [ $CODE -eq 0 ] ;then  
+			Rx_Modulation=$(echo $SNMP_VALUE | awk '{ print substr($0, index($0,$4)) }') 
+			else 
+			Rx_Modulation="$SNMP_VALUE"
+			fi 
+			echo -e "Rx_Modulation=$Rx_Modulation" >> $OUTPUT_FILE
+			############# Tx Capacity  #############
+			parameter_check $HOST .1.3.6.1.4.1.7571.100.1.1.7.1.3.11
+			if [ $CODE -eq 0 ] ;then  
+			Tx_Capacity=$(echo $SNMP_VALUE | awk '{ printf "%.1f\n" ,substr($0, index($0,$4))/1000 }' )
+			else 
+			Tx_Capacity="$SNMP_VALUE"
+			fi 
+			echo -e "Tx_Capacity=$Tx_Capacity Mbps" >> $OUTPUT_FILE
+			############# Rx Capacity  #############
+			parameter_check $HOST .1.3.6.1.4.1.7571.100.1.1.7.1.3.10
+			if [ $CODE -eq 0 ] ;then  
+			Rx_Capacity=$(echo $SNMP_VALUE | awk '{ printf "%.1f\n" ,substr($0, index($0,$4))/1000 }' )
+			else 
+			Rx_Capacity="$SNMP_VALUE"
+			fi 
+			echo -e "Rx_Capacity=$Rx_Capacity Mbps" >> $OUTPUT_FILE   
+			############# Uptime  #############
+			UPTIME=$(eval $COMMANDS_PATH/check_uptime_human $COMMUNITY $HOST )
+			echo -e "UPTIME=$UPTIME" >> $OUTPUT_FILE
+			debug UPTIME
+        ;;
+        nera)
+			COMMUNITY='public'
+			join_ecare_data_writer Radio_Model "Nera"
+			join_ecare_data_writer Radio_Type "Nera"
+			snmp_port_status check
+			snmp_port_status traffic
+			UPTIME=$(snmpwalk -v2c -c $COMMUNITY $HOST SNMPv2-SMI::mib-2.47.1.4.1.0 2>&1 | awk '{print $5" "$6" "$7}')
+			echo -e "UPTIME=$UPTIME" >> $OUTPUT_FILE
+			debug UPTIME
+    ;;
+        netronics) ### Use SNMP Version 1 
+                COMMUNITY='netman'
+				join_ecare_data_writer Radio_Type "$Netronics"
+				join_ecare_data_writer Radio_Model "Netronics"
+                ############# Ports   #############
+				for port in Management radio
+				do
+                PORT_STATUS=$(eval $COMMANDS_PATH/netronics_port_status $HOST $COMMUNITY "$port" check )
+                echo -e "PORT_STATUS_${port}=$PORT_STATUS" >> $OUTPUT_FILE
+				done
+				for port in Management radio
+				do
+                PORT_TRAFFIC=$(eval $COMMANDS_PATH/netronics_port_status $HOST $COMMUNITY "$port" traffic)
+                echo -e "PORT_TRAFFIC_${port}=$PORT_TRAFFIC" >> $OUTPUT_FILE
+                done
+                ############# Frequency #############
+                parameter_check $HOST .1.3.6.1.4.1.29612.1000.1.5.16
+                if [ $CODE -eq 0 ] ;then  
+                Frequency=$(echo $SNMP_VALUE | awk '{ print substr($0, index($0,$4)) }') 
+                else 
+                Frequency="$SNMP_VALUE"
+                fi 
+                echo -e "Frequency=$Frequency" >> $OUTPUT_FILE #MHz
+                ############# Channel Bandwidth #############
+                parameter_check $HOST .1.3.6.1.4.1.29612.1000.1.5.24
+                if [ $CODE -eq 0 ] ;then  
+                Channel_Bandwidth=$(echo $SNMP_VALUE | awk '{ printf "%.1f\n" ,substr($0, index($0,$4))/1000 }') 
+                else 
+                Channel_Bandwidth="$SNMP_VALUE"
+                fi 
+                echo -e "Channel_Bandwidth=$Channel_Bandwidth" >> $OUTPUT_FILE #MHz
+                ############# DFS_State #############
+                parameter_check $HOST .1.3.6.1.4.1.29612.1000.1.5.19
+                if [ $CODE -eq 0 ] ;then  
+                DFS_State=$(echo $SNMP_VALUE | awk '{ print $4}') 
+                if [ $DFS_State -eq 1 ] ;then DFS_State='Yes' ; else DFS_State="No" ; fi
+                else 
+                DFS_State="$SNMP_VALUE"
+                fi 
+                echo -e "DFS_State=$DFS_State" >> $OUTPUT_FILE
+                ############# Min RSL #############
+                parameter_check $HOST .1.3.6.1.4.1.29612.1000.1.6.4.1.1
+                if [ $CODE -eq 0 ] ;then  
+                Min_RSL=$(echo $SNMP_VALUE | awk '{ print $4}') 
+                else 
+                Min_RSL="$SNMP_VALUE"
+                fi 
+                echo -e "Min_RSL=$Min_RSL" >> $OUTPUT_FILE
+                ############# Max RSL #############
+                parameter_check $HOST .1.3.6.1.4.1.29612.1000.1.6.4.1.2
+                if [ $CODE -eq 0 ] ;then  
+                Max_RSL=$(echo $SNMP_VALUE | awk '{ print $4}') 
+                else 
+                Max_RSL="$SNMP_VALUE"
+                fi 
+                echo -e "Max_RSL=$Max_RSL" >> $OUTPUT_FILE
+                ############# Frequency #############
+                parameter_check $HOST .1.3.6.1.4.1.29612.1000.1.5.12 
+                if [ $CODE -eq 0 ] ;then  
+                Current_TxPower=$(echo $SNMP_VALUE | awk '{ print $4}') 
+                else 
+                Current_TxPower="$SNMP_VALUE"
+                fi 
+                echo -e "Current_TxPower=$Current_TxPower" >> $OUTPUT_FILE
+                ############# MAC Address #############
+                parameter_check $HOST ifPhysAddress.1
+                if [ $CODE -eq 0 ] ;then  
+                Management_Mac=$(echo $SNMP_VALUE | awk '{print $4}' | tr -d ':' | tr [a-z] [A-Z])
+                                join_ecare_data_writer Radio_MAC_Address "$Management_Mac"
+                else 
+                Management_Mac="$SNMP_VALUE"
+                fi 
+                echo -e "Management_Mac=$Management_Mac" >> $OUTPUT_FILE
+                # parameter_check $HOST ifPhysAddress.101
+                # if [ $CODE -eq 0 ] ;then  
+                # Radio_Mac=$(echo $SNMP_VALUE | awk '{print $4}' | tr -d ':' | tr [a-z] [A-Z]) 
+                # else 
+                # Radio_Mac="$SNMP_VALUE"
+                # fi 
+                # echo -e "Radio_Mac=$Radio_Mac" >> $OUTPUT_FILE
+                ############# Uptime  #############
+                UPTIME=$(snmpwalk -r1 -t1 -v1 -c $COMMUNITY $HOST sysUpTimeInstance 2>&1| awk '{print $5,$6,$7}' |cut -d'.' -f1 )
+                echo -e "UPTIME=$UPTIME" >> $OUTPUT_FILE
+
+                ;;
+        racom)
+                COMMUNITY='racom-public'
+				join_ecare_data_writer Radio_Type "Racom"
+                ############# Ports #############
+                for i in p2_data_e1 p4_data_e2 p6_air
+                do 
+                PORT_STATUS=$(eval $COMMANDS_PATH/racom_port_status $HOST $COMMUNITY "$i" check )
+                echo -e "PORT_STATUS_${i}=$PORT_STATUS" >> $OUTPUT_FILE
+                done 
+                for i in p2_data_e1 p4_data_e2 p6_air
+                do
+                PORT_TRAFFIC=$(eval $COMMANDS_PATH/racom_port_status $HOST $COMMUNITY "$i" traffic)
+                echo -e "PORT_TRAFFIC_${i}=$PORT_TRAFFIC" >> $OUTPUT_FILE
+                done 
+                ############# Model #############
+                parameter_check $HOST .1.3.6.1.4.1.33555.1.1.1.1 
+                if [ $CODE -eq 0 ] ;then  
+                Model=$(echo $SNMP_VALUE | awk '{print substr($0,index($0,$4))}') 
+				join_ecare_data_writer Radio_Model "$Model"
+                else 
+                Model="$SNMP_VALUE"
+                fi 
+                echo -e "Model=$Model" >> $OUTPUT_FILE
+                ############# Serial Number #############
+                parameter_check $HOST .1.3.6.1.4.1.33555.1.1.1.2 
+                if [ $CODE -eq 0 ] ;then  
+                Serial_number=$(echo $SNMP_VALUE | awk '{print $4}') 
+                                join_ecare_data_writer Radio_Serial_No $Serial_number
+                else 
+                Serial_number="$SNMP_VALUE"
+                fi 
+                echo -e "Serial_number=$Serial_number" >> $OUTPUT_FILE
+                ############# RX Frequency #############
+                parameter_check $HOST .1.3.6.1.4.1.33555.1.2.1.3
+                if [ $CODE -eq 0 ] ;then  
+                Rx_Frequency=$(echo $SNMP_VALUE | awk '{printf "%.1f\n" ,substr($0, index($0,$4))/1000000 }') 
+                else 
+                Rx_Frequency="$SNMP_VALUE"
+                fi 
+                echo -e "Rx_Frequency=$Rx_Frequency" >> $OUTPUT_FILE #MHz
+                ############# Tx Frequency #############
+                parameter_check $HOST .1.3.6.1.4.1.33555.1.2.1.4
+                if [ $CODE -eq 0 ] ;then  
+                Rx_Frequency=$(echo $SNMP_VALUE | awk '{printf "%.1f\n" ,substr($0, index($0,$4))/1000000 }') 
+                else 
+                Rx_Frequency="$SNMP_VALUE"
+                fi 
+                echo -e "Rx_Frequency=$Rx_Frequency" >> $OUTPUT_FILE #MHz
+                ############# Bandwidth #############
+                parameter_check $HOST .1.3.6.1.4.1.33555.1.2.1.15
+                if [ $CODE -eq 0 ] ;then  
+                Bandwidth=$(echo $SNMP_VALUE | awk '{printf "%.1f\n" ,substr($0, index($0,$4))/1000 }') 
+                else 
+                Bandwidth="$SNMP_VALUE"
+                fi 
+                echo -e "Bandwidth=$Bandwidth" >> $OUTPUT_FILE #MHz
+                ############# RSS #############
+                parameter_check $HOST .1.3.6.1.4.1.33555.1.3.2.1
+                if [ $CODE -eq 0 ] ;then  
+                RSS=$(echo $SNMP_VALUE | awk '{printf "%.1f\n" ,substr($0, index($0,$4))/10 }') 
+                else 
+                RSS="$SNMP_VALUE"
+                fi 
+                echo -e "RSS=$RSS" >> $OUTPUT_FILE
+                ############# Tx_Power #############
+                parameter_check $HOST .1.3.6.1.4.1.33555.1.2.1.17
+                if [ $CODE -eq 0 ] ;then  
+                Tx_Power=$(echo $SNMP_VALUE | awk '{print $4}') 
+                else 
+                Tx_Power="$SNMP_VALUE"
+                fi 
+                echo -e "Tx_Power=$Tx_Power" >> $OUTPUT_FILE
+                ############# Ber #############
+                parameter_check $HOST .1.3.6.1.4.1.33555.1.3.2.11
+                if [ $CODE -eq 0 ] ;then  
+                Ber=$(echo $SNMP_VALUE |  awk '{print $4}') 
+                else 
+                RSS="$SNMP_VALUE"
+                fi 
+                echo -e "Ber=$Ber" >> $OUTPUT_FILE #############
+                ############# SNR #############
+                parameter_check $HOST .1.3.6.1.4.1.33555.1.3.2.2
+                if [ $CODE -eq 0 ] ;then  
+                SNR=$(echo $SNMP_VALUE | awk '{printf "%.1f\n" ,substr($0, index($0,$4))/10 }') 
+                else 
+                SNR="$SNMP_VALUE"
+                fi 
+                echo -e "SNR=$SNR" >> $OUTPUT_FILE
+                ############# MAC Address #############
+                parameter_check $HOST .1.3.6.1.4.1.33555.1.1.6.5
+                if [ $CODE -eq 0 ] ;then  
+                MAC_Address=$(echo $SNMP_VALUE | awk '{print substr($0, index($0,$4))}' | tr -d ' ') 
+				join_ecare_data_writer Radio_MAC_Address "$MAC_Address"
+                else 
+                MAC_Address="$SNMP_VALUE"
+                fi 
+                echo -e "MAC_Address=$MAC_Address" >> $OUTPUT_FILE
+                ############# Rx Modulation #############
+                parameter_check $HOST .1.3.6.1.4.1.33555.1.2.1.5
+                if [ $CODE -eq 0 ] ;then  
+                Rx_Modulation=$(echo $SNMP_VALUE | awk '{print substr($0, index($0,$4))}') 
+                else 
+                Rx_Modulation="$SNMP_VALUE"
+                fi 
+                echo -e "Rx_Modulation=$Rx_Modulation" >> $OUTPUT_FILE
+                ############# Tx Modulation #############
+                parameter_check $HOST .1.3.6.1.4.1.33555.1.2.1.6
+                if [ $CODE -eq 0 ] ;then  
+                Tx_Modulation=$(echo $SNMP_VALUE | awk '{print substr($0, index($0,$4))}') 
+                else 
+                Tx_Modulation="$SNMP_VALUE"
+                fi 
+                echo -e "Tx_Modulation=$Tx_Modulation" >> $OUTPUT_FILE
+                ############# Uptime #############
+                UPTIME=$(eval $COMMANDS_PATH/check_uptime_human $COMMUNITY $HOST )
+                echo -e "UPTIME=$UPTIME" >> $OUTPUT_FILE
+
+        ;;
+        fiber|nec|rtn)
+				join_ecare_data_writer Radio_Type "$DEVICE_TYPE"
+				join_ecare_data_writer Radio_Model "DEVICE_TYPE"
+                MESSAGE+=" Non SNMP support device"
+				#final_out_put
+        ;;
+    none)
+                FILE_DATE=$(date +"%Y%m%d_%H%M%S")
+                EXECUTION_TIME=$(date +'%F %T')
+                MESSAGE+=" SNMP error."
+                for i in `echo $PORTS |sed 's/,/ /g'` ; do MESSAGE+=" Port $i is warning."; done 
+                NODE_STATUS=3
+                last_status_check
+				data_writer -r 
+				OUT_PUT_SERVICE="-"
+                data_writer "${SECONDARY_MESSAGE}Unknown Device: $MESSAGE"
+                echo "${SECONDARY_MESSAGE}Unknown Device: $MESSAGE"
+				final_out_put
+                exit 3
+                ;;
+esac 
+########################### checking important ports 
+case $DEVICE_TYPE in fiber|nec|rtn)
+ ;; 
+ *)
+        for i in `echo $PORTS |sed 's/,/ /g'` 
+        do
+        if [[ $i == *"l2tp-out"* ]]; then i=$(echo $i | sed 's/l2tp-out.*/l2tp-out/g') ; fi
+        if [[ `grep STATUS_$i  $OUTPUT_FILE 2>/dev/null` == *"UP"* ]] 
+        then
+			CONDITION=$(($CONDITION + 0))
+        elif  [[ `grep STATUS_$i $OUTPUT_FILE 2>/dev/null` == *"Down"* ]]
+        then
+			MESSAGE+=" Port $i is Down."
+			CONDITION=$(($CONDITION + 50))
+		elif [[ `grep STATUS_$i  $OUTPUT_FILE 2>/dev/null` == *"Warning"* ]] || [[ w`grep STATUS_$i  $OUTPUT_FILE 2>/dev/null` == w ]]
+        then
+			MESSAGE+=" Port $i is warning."
+			CONDITION=$(($CONDITION + 5))
+        elif [[ `grep STATUS_$i  $OUTPUT_FILE 2>/dev/null` == *"Unknown"* ]]  
+        then
+			MESSAGE+=" Port $i is unknown."
+			CONDITION=$(($CONDITION + 1000))
+        else 
+		MESSAGE=" Please check SNMP conditions"
+        fi
+        done
+esac 
+######################### creating output and exit code 
+FILE_DATE=$(date +"%Y%m%d_%H%M%S")
+EXECUTION_TIME=$(date +'%F %T')
+if [ $CONDITION -eq 0 ] 
+ then
+        NODE_STATUS=0
+        last_status_check
+		data_writer -r
+		if [ -z "$MESSAGE" ] ; then MESSAGE='Service is OK' ;fi 
+        echo "$SECONDARY_MESSAGE $MESSAGE"
+        final_out_put
+		data_writer "$SECONDARY_MESSAGE $MESSAGE"
+        exit 0
+ elif [ $CONDITION -gt 0 ] && [ $CONDITION -lt 50 ]
+ then 
+        NODE_STATUS=1
+        last_status_check
+		data_writer -r
+        echo "${SECONDARY_MESSAGE}Warning: $MESSAGE"
+        final_out_put
+		data_writer "${SECONDARY_MESSAGE}Warning: $MESSAGE"
+        exit 1
+ elif [ $CONDITION -ge 50 ] && [ $CONDITION -lt 1000 ]
+ then 
+        NODE_STATUS=2
+        last_status_check
+        data_writer -r
+        echo "$SECONDARY_MESSAGE Critical: $MESSAGE"
+        final_out_put
+        data_writer "$SECONDARY_MESSAGE Critical: $MESSAGE"
+        exit 2
+ else 
+        NODE_STATUS=3
+        last_status_check
+        data_writer -r
+        echo "Unknown: $MESSAGE"
+        final_out_put
+        data_writer "Unknown: $MESSAGE"
+        
+        exit 3
+fi 
