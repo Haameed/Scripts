@@ -1,0 +1,109 @@
+#########################
+#  Author: Hamed Maleki
+#        2019-7-18
+#########################
+
+####################### netronics  Functions #######################
+function port_status_check() {
+SNMP_PORT_STATUS=$(snmpwalk -r1 -t1 -v1 -c $COMMUNITY  $HOST  ifOperStatus.1 2>&1| rev | awk '{print $1}' | rev | sed 's/(.)//g')
+}
+
+function traffic_calculator() {
+IN_1=$(cat /tmp/.${HOST}_in_${PORT}.txt 2>/dev/null|grep -vi "Kbps" | awk -F',' '{print $1}')
+if [ -z "$IN_1" ] ; then IN_1=0 ;fi
+T1_IN=$(cat /tmp/.${HOST}_in_${PORT}.txt 2>/dev/null|grep -vi "Kbps" | awk -F',' '{print $2}')
+if [ -z "$T1_IN" ] ; then T1_IN=$(date +%s) ;fi
+OUT_1=$(cat /tmp/.${HOST}_out_${PORT}.txt 2>/dev/null |grep -vi "Kbps"| awk -F',' '{print $1}')
+if [ -z "$OUT_1" ] ; then OUT_1=0 ;fi
+T1_OUT=$(cat /tmp/.${HOST}_out_${PORT}.txt 2>/dev/null |grep -vi "Kbps" | awk -F',' '{print $2}')
+if [ -z "$T1_OUT" ] ; then T1_OUT=$(date +%s) ;fi
+
+IN_2_CHECK=$(snmpwalk -r1 -t1 -v1 -c $COMMUNITY $HOST ifInOctets.1 2>&1 | awk '{print $4}')
+case $IN_2_CHECK in 
+  ''|*[!0-9]*)
+        EXE_TIME="$T1_IN"
+        IN_2="$IN_1"
+        ;;
+  *)
+        EXE_TIME=$(date +%s)
+        IN_2="$IN_2_CHECK"
+        ;;
+ esac
+
+echo "$IN_2,$EXE_TIME,$PORT_STATUS" > /tmp/.${HOST}_in_${PORT}.txt
+OUT_2_CHECK=$(snmpwalk -r1 -t1 -v1  -c $COMMUNITY $HOST ifOutOctets.1 2>&1| awk '{print $4}')
+case $OUT_2_CHECK in 
+  ''|*[!0-9]*)
+        EXE_TIME="$T1_OUT"
+        OUT_2="$OUT_1"
+        ;;
+  *)
+        EXE_TIME=$(date +%s)
+        OUT_2="$OUT_2_CHECK"
+        ;;
+ esac
+echo "$OUT_2,$EXE_TIME,$PORT_STATUS" > /tmp/.${HOST}_out_${PORT}.txt
+
+T2_IN=$(cat /tmp/.${HOST}_in_${PORT}.txt |grep -vi "Kbps" | awk -F',' '{print $2}')
+T2_OUT=$(cat /tmp/.${HOST}_out_${PORT}.txt|grep -vi "Kbps" | awk -F',' '{print $2}')
+TIME_IN=$(echo "$T2_IN - $T1_IN" | bc)
+if [ $TIME_IN -eq 0 ] ; then fake=1 ; else fake=0 ; fi 
+TIME_OUT=$(echo "$T2_OUT - $T1_OUT" | bc)
+if [ $TIME_OUT -eq 0 ] ; then fake=1 ; else fake=0 ; fi 
+if [ "$IN_2" -ge "$IN_1" ] && [ "$OUT_2" -ge "$OUT_1" ]
+then
+INPUT=$(echo "scale=2;($IN_2-$IN_1)/($TIME_IN*1024*8+$fake)" | bc -l)
+OUTPUT=$(echo "scale=2;($OUT_2-$OUT_1)/($TIME_OUT*1024*8+$fake)" | bc -l)
+echo "in:"$INPUT" Kbps , out:"$OUTPUT" Kbps | ${PORT}_in="$INPUT"Kbps;0 ${PORT}_out="$OUTPUT"Kbps;0" >> $REFRENCE_PATH
+else
+INPUT=$(echo "scale=2;($IN_2 - 0)/($TIME_IN*1024*8+$fake)" | bc -l)
+OUTPUT=$(echo "scale=2;($OUT_2 - 0)/($TIME_OUT*1024*8+$fake)" | bc -l)
+echo "in:"$INPUT" Kbps , out:"$OUTPUT" Kbps | ${PORT}_in="$INPUT"Kbps;0 ${PORT}_out="$OUTPUT"Kbps;0" >> $REFRENCE_PATH
+fi
+}
+
+##################################### Main Part ######################### z
+HOST=$1
+COMMUNITY=$2
+PORT=$(echo $3 |tr [A-Z] [a-z])
+ACTION=$4 ### status|traffic 
+REFRENCE_PATH="/tmp/.${HOST}_out_${PORT}.txt"
+
+
+case $ACTION in 
+        check) 
+                port_status_check
+                case $SNMP_PORT_STATUS in 
+                        up)
+                        echo "SNMP OK - Port is UP"
+                        PORT_STATUS=0
+                        traffic_calculator
+                        exit 0
+                        ;;
+                        OID)
+                        echo "SNMP Warning - No Such Object available Maybe device is rebooted or port is no longer available"
+                        PORT_STATUS=1
+                        status_index_finder
+                        traffic_calculator
+                        #sed -i 's/[^,]*/1/4' $REFRENCE_PATH
+                        exit 1
+                        ;;
+                        down)
+                        echo "SNMP OK - Port is Down"
+                        PORT_STATUS=2                   
+                        echo "0,$(date +%s),$PORT_STATUS" > /tmp/.${HOST}_in_${PORT}.txt
+                        echo "0,$(date +%s),$PORT_STATUS" > /tmp/.${HOST}_out_${PORT}.txt
+                        echo "in:"0" Kbps , out:"0" Kbps | ${PORT}_in="0"Kbps;0 ${PORT}_out="0"Kbps;0" > $REFRENCE_PATH
+                        exit 2
+                        ;;
+                        *)
+                        echo "Unknown Status"
+                        PORT_STATUS=3
+                        echo "in:"0" Kbps , out:"0" Kbps | ${PORT}_in="0"Kbps;0 ${PORT}_out="0"Kbps;0" > $REFRENCE_PATH
+                        exit 3
+                        esac
+        ;;
+        traffic) 
+                cat  $REFRENCE_PATH |grep  "Kbps" 
+        ;;
+esac
