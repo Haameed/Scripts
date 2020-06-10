@@ -1,4 +1,3 @@
-cat > /usr/bin/workers 
 #!/bin/bash
 #############
 #  Author: Hamed Maleki
